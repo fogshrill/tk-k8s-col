@@ -14,6 +14,13 @@ on:
         default: '20'
 
 # ─────────────────────────────────────────────────────────────
+# 🛠️ YEH BLOCK MAINE LIKH DIYA HAI (WRITE PERMISSION)
+# ─────────────────────────────────────────────────────────────
+permissions:
+  contents: write    # Is se Ledger CSV file repo me push ho sakegi
+  workflows: write   # Multi-account environments me pipeline safety ke liye zaroori hai
+
+# ─────────────────────────────────────────────────────────────
 # STEP 1: Prepare — generate batch name, passed to all workers
 # ─────────────────────────────────────────────────────────────
 jobs:
