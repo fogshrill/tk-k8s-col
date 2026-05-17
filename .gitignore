@@ -1,0 +1,25 @@
+# --- Rclone & Sensitive Credentials ---
+rclone.conf
+accounts.txt
+
+
+# --- Local Scraping Data & Temporaries ---
+Batch--*
+*_artifact.zip
+*.mp4
+*.mp3
+*.json
+*.txt
+
+# --- Exceptions to allow structural files ---
+!.github/workflows/*.yml
+!requirements.txt
+!links.txt
+
+# --- Logs & Python Caching ---
+__pycache__/
+*.log
+.pytest_cache/
+.DS_Store
+.venv/
+venv/
