@@ -1,0 +1,149 @@
+name: TikTok Scraper
+
+on:
+  # Sirf Manual trigger
+  workflow_dispatch:
+    inputs:
+      batch_name:
+        description: 'Batch folder name (leave empty = auto timestamp)'
+        required: false
+        default: ''
+      total_chunks:
+        description: 'Number of parallel workers (default: 20 for 10k links)'
+        required: false
+        default: '20'
+
+# ─────────────────────────────────────────────────────────────
+# STEP 1: Prepare — generate batch name, passed to all workers
+# ─────────────────────────────────────────────────────────────
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      batch_name:    ${{ steps.batch.outputs.batch_name }}
+      total_chunks:  ${{ steps.batch.outputs.total_chunks }}
+      chunk_matrix:  ${{ steps.batch.outputs.chunk_matrix }}
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🏷️ Generate Batch Name + Matrix
+        id: batch
+        run: |
+          # Batch name: use input or auto-generate timestamp
+          INPUT_NAME="${{ github.event.inputs.batch_name }}"
+          if [ -z "$INPUT_NAME" ]; then
+            BATCH_NAME="Batch--$(date +'%Y-%m-%d-%A_%I-%M-%S-%p')"
+          else
+            BATCH_NAME="$INPUT_NAME"
+          fi
+          echo "batch_name=$BATCH_NAME" >> $GITHUB_OUTPUT
+          echo "✅ Batch: $BATCH_NAME"
+
+          # Total chunks
+          CHUNKS="${{ github.event.inputs.total_chunks }}"
+          if [ -z "$CHUNKS" ]; then CHUNKS="20"; fi
+          echo "total_chunks=$CHUNKS" >> $GITHUB_OUTPUT
+
+          # Build JSON array for matrix: [0,1,2,...,N-1]
+          MATRIX=$(python3 -c "import json; n=int('$CHUNKS'); print(json.dumps(list(range(n))))")
+          echo "chunk_matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "📦 Matrix: $MATRIX"
+
+      - name: 📋 Verify links.txt
+        run: |
+          if [ ! -f links.txt ]; then
+            echo "❌ links.txt not found!"
+            exit 1
+          fi
+          TOTAL=$(wc -l < links.txt)
+          echo "✅ Total links: $TOTAL"
+
+# ─────────────────────────────────────────────────────────────
+# STEP 2: Parallel Scrape Workers (20 simultaneous jobs)
+# ─────────────────────────────────────────────────────────────
+  scrape:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 350  # Takreeban 6 ghante
+
+    strategy:
+      matrix:
+        chunk: ${{ fromJSON(needs.prepare.outputs.chunk_matrix) }}
+      fail-fast: false  # Agar ek worker fail ho to baaki chaltay rahein
+
+    env:
+      BATCH_FOLDER_NAME: ${{ needs.prepare.outputs.batch_name }}
+      CHUNK_INDEX:       ${{ matrix.chunk }}
+      TOTAL_CHUNKS:      ${{ needs.prepare.outputs.total_chunks }}
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: ⬆️ Update yt-dlp
+        run: pip install -U yt-dlp
+
+      - name: 🎬 Install ffmpeg (for H.264 transcode fix)
+        run: sudo apt-get install -y ffmpeg
+
+      - name: ☁️ Install rclone
+        run: curl https://rclone.org/install.sh | sudo bash
+
+      - name: 🔧 Configure rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
+          -in rclone.conf.enc \
+          -out ~/.config/rclone/rclone.conf \
+          -pass pass:${{ secrets.RCLONE_CONFIG_PASSWORD }}
+
+      - name: 🚀 Run Scraper (Worker ${{ matrix.chunk }})
+        run: python scraper-fixed.py
+
+      - name: Upload Node Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodereport-${{ matrix.chunk }}
+          path: NodeReport_*.json
+
+      - name: Upload Scraped Data ZIP (Artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraper-artifact-chunk-${{ matrix.chunk }}
+          path: "*_artifact.zip"
+
+# ─────────────────────────────────────────────────────────────
+# STEP 3: Summary Node (Compiles Master Ledger)
+# ─────────────────────────────────────────────────────────────
+  summary_job:
+    needs: scrape
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all Node Reports
+        uses: actions/download-artifact@v4
+        with:
+          path: ./reports
+          pattern: nodereport-*
+          merge-multiple: true
+
+      - name: Move reports to root
+        run: mv ./reports/*.json ./ || true
+
+      - name: Run Summary Reporter
+        run: python summary_reporter_tiktok.py
